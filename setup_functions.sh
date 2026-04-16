@@ -237,6 +237,20 @@ install_fairseq() {
         cd "$FAIRSEQ_ROOT"
     fi
 
+    # PROSIT 3 / fork-specific changes live in a patch next to this repo's fairseq checkout
+    # (fairseq_ is its own git repo, so the outer repo cannot track its files directly).
+    local fairseq_patch="$INSTALL_ROOT/fairseq_soc.patch"
+    if [ -f "$fairseq_patch" ]; then
+        log "Applying fork patch: $fairseq_patch"
+        if git apply --check "$fairseq_patch" 2>/dev/null; then
+            git apply "$fairseq_patch" || { log "[ERROR] Failed to apply $fairseq_patch"; exit 1; }
+        else
+            log "[WARN] Patch does not apply cleanly (maybe already applied or fairseq revision drifted). Skipping apply. Inspect with: git apply --check $fairseq_patch"
+        fi
+    else
+        log "[INFO] No fairseq patch at $fairseq_patch (optional)."
+    fi
+
     log "Installing fairseq in editable mode (CPU-friendly)..."
     # Avoid pip build isolation: otherwise pip may try to download a CUDA-enabled torch stack
     # as a build dependency (very large) even though we already installed CPU torch.
