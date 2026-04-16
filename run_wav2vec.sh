@@ -1,7 +1,9 @@
 #!/bin/bash
 
+# Pass through dataset paths as $1–$4 (see wav2vec_functions.sh).
+# Example: ./run_wav2vec.sh /path/to/train_wav /path/to/val_wav /path/to/test_wav /path/to/text.txt
 # Source the function definitions
-source "$(dirname "$0")/wav2vec_functions.sh"
+source "$(dirname "$0")/wav2vec_functions.sh" "$@"
 
 create_dirs #creates directories for storing outputs from the different steps 
 
@@ -14,6 +16,7 @@ log "It creates a manifest files for the audio dataset audio format"
 
 create_manifests_train 0 
 create_manifests_val 0 
+subsample_audio_manifests
 create_manifests_test 0 
 
 #creates new manifest with silence removed

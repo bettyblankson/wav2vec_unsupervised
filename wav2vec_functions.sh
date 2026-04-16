@@ -199,6 +199,25 @@ create_manifests_test() {
     fi
 }
 
+# After train/valid manifests exist, optionally cap utterance counts (see utils.sh).
+# Checkpointed so a re-run with skipped manifest steps does not re-truncate files.
+subsample_audio_manifests() {
+    local step_name="subsample_manifests"
+    if is_completed "$step_name"; then
+        log "Skipping manifest subsample (already completed)"
+        return 0
+    fi
+    if [[ (! -f "$MANIFEST_DIR/train.tsv") || (! -f "$MANIFEST_DIR/valid.tsv") ]]; then
+        log "ERROR: subsample_audio_manifests needs train.tsv and valid.tsv"
+        exit 1
+    fi
+    mark_in_progress "$step_name"
+    subsample_fairseq_manifest "$MANIFEST_DIR/train.tsv" "${MAX_TRAIN_UTTERANCES:-0}"
+    subsample_fairseq_manifest "$MANIFEST_DIR/valid.tsv" "${MAX_VALID_UTTERANCES:-0}"
+    mark_completed "$step_name"
+    log "Manifest subsample step completed"
+}
+
 # --- In your main function ---
 # Step 2: create vads files out of the audios 
 create_rVADfast() { 
@@ -379,17 +398,25 @@ prepare_text() {
         return 0
     fi
 
-    log "audio preparation."
+    log "text preparation."
     mark_in_progress "$step_name"
     replace_std_endl $ADD_SELF_LOOP_SIMPLE  # this replaces the fixes error caused by the old script std::endl with \n
-    zsh "$FAIRSEQ_ROOT/examples/wav2vec/unsupervised/scripts/prepare_text.sh" $LANG $UNLABELLED_TEXT $TEXT_OUTPUT $MIN_PHONES $PHONEMIZER "$FASTTEXT_LIB_MODEL" 0.25 
-    # Check if the command was successful
-    if [ $? -eq 0 ]; then
-        mark_completed "$step_name"
-        log "text preparation successfully"
-    else
-        log "ERROR: text preparation  failed"
+    local TEXT_SRC="$UNLABELLED_TEXT"
+    local TEXT_TMP=""
+    if [[ -n "${MAX_UNLABELLED_TEXT_LINES:-}" && "${MAX_UNLABELLED_TEXT_LINES}" -gt 0 ]]; then
+        TEXT_TMP=$(mktemp)
+        head -n "$MAX_UNLABELLED_TEXT_LINES" "$UNLABELLED_TEXT" > "$TEXT_TMP"
+        TEXT_SRC="$TEXT_TMP"
+        log "Using first ${MAX_UNLABELLED_TEXT_LINES} lines of unlabelled text for prepare_text"
+    fi
+    zsh "$FAIRSEQ_ROOT/examples/wav2vec/unsupervised/scripts/prepare_text.sh" $LANG "$TEXT_SRC" $TEXT_OUTPUT $MIN_PHONES $PHONEMIZER "$FASTTEXT_LIB_MODEL" 0.25
+    local prep_rc=$?
+    rm -f "$TEXT_TMP"
+    if [[ $prep_rc -ne 0 ]]; then
+        log "ERROR: text preparation failed"
         exit 1
     fi
+    mark_completed "$step_name"
+    log "text preparation successfully"
 
 }

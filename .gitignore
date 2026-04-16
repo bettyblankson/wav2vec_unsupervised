@@ -1,0 +1,49 @@
+# =========================
+# Generated training outputs
+# =========================
+outputs/
+multirun/
+report_figures/
+
+# =========================
+# Runtime logs / temp
+# =========================
+app.log
+*.log
+
+# =========================
+# Personal docs / reports
+# =========================
+LEARNING_NOTES.md
+PIPELINE_IMPLEMENTATION_BREAKDOWN_PROSIT3.md
+PROSIT3_wav2vecU_report*.tex
+TECHNICAL_REPORT_PROSIT3.*
+NLP_Prosit2_Betty.pdf
+NLP_Prosit2_Betty.pdf:Zone.Identifier
+*.docx
+*.pdf
+image/
+
+# =========================
+# Local data and environments
+# =========================
+datasets/
+unsupervised_wav/data/
+unsupervised_wav/venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# =========================
+# Large generated artifacts
+# =========================
+*.npy
+*.pt
+*.bin
+*.arpa
+*.wav
+*.flac
+*.zip
+*.tar
+*.tar.gz
+

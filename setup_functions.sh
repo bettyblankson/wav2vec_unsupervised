@@ -8,20 +8,19 @@ set -o pipefail              # Exit if any command in a pipe fails
 set -x                       # Print each command for debugging
 
 # ==================== CONFIGURATION ====================
-# Set these variables according to your environment
+# Install everything relative to this repository, so the repo stays self-contained.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Main directories
-INSTALL_ROOT="$HOME/wav2vec_unsupervised"
+INSTALL_ROOT="$REPO_ROOT/unsupervised_wav"
 FAIRSEQ_ROOT="$INSTALL_ROOT/fairseq_"
 KENLM_ROOT="$INSTALL_ROOT/kenlm"
 VENV_PATH="$INSTALL_ROOT/venv"
 RVADFAST_ROOT="$INSTALL_ROOT/rVADfast"
 FLASHLIGHT_SEQ_ROOT="$INSTALL_ROOT/sequence"
 
-
-# Python version
-PYTHON_VERSION="3.10"  # Options: 3.7, 3.8, 3.9, 3.10
-CUDA="12.3"
+# CUDA is optional (CPU-only installs are supported).
+CUDA="${CUDA:-12.3}"
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -40,9 +39,8 @@ command_exists() {
 }
 
 get_system_cuda_suffix() {
-    if ! command -v nvcc --version >/dev/null 2>&1; then
-        log "ERROR: nvcc (NVIDIA CUDA Compiler) not found in PATH. Cannot determine CUDA version for GPU packages."
-        exit 1
+    if ! command -v nvcc >/dev/null 2>&1; then
+        return 0
     fi
     local cuda_version
     cuda_version=$(nvcc --version | sed -n 's/.*release \([0-9]\+\.[0-9]\+\).*/\1/p')
@@ -58,34 +56,37 @@ create_dirs() {
 # ==================== SETUP STEPS ====================
 setup_venv() {
     log "Setting up Python virtual environment..."
-    
-     #setting up pyenv to tackle linkage errors, protobuf requires a python environment which is not static 
-    export PYENV_ROOT="$HOME/.pyenv"
 
-    # Install pyenv ONLY if not already installed
-    if [ ! -d "$PYENV_ROOT" ]; then
-        curl -fsSL https://pyenv.run | bash
-            export PYENV_ROOT="$HOME/.pyenv"
-            [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-            eval "$(pyenv init - bash)"
-        echo "Detected Python version: $PYTHON_VERSION"
-        env PYTHON_CONFIGURE_OPTS="--enable-shared" pyenv install $PYTHON_VERSION
-        pyenv local $PYTHON_VERSION
-    else
-        log "Python $PYENV_ROOT already installed."
+    # Prefer Python 3.10 if available, otherwise 3.11, otherwise system python3.
+    local pybin="python3"
+    if command -v python3.10 >/dev/null 2>&1; then
+        pybin="python3.10"
+    elif command -v python3.11 >/dev/null 2>&1; then
+        pybin="python3.11"
     fi
-   
-    
+
+    # If an existing venv is on Python 3.12, rebuild it with 3.10/3.11 because
+    # this fairseq fork frequently fails to compile extensions on 3.12.
     if [ -d "$VENV_PATH" ]; then
-        log "Virtual environment already exists at $VENV_PATH"
-    else
-        # python${PYTHON_VERSION} -m venv "$VENV_PATH"
-        python3 -m venv "$VENV_PATH"
-        log "Created virtual environment at $VENV_PATH"
+        if [ -x "$VENV_PATH/bin/python" ] && "$VENV_PATH/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3,12) else 1)' >/dev/null 2>&1; then
+            log "[WARN] Existing venv uses Python 3.12. Recreating venv with $pybin..."
+            rm -rf "$VENV_PATH"
+        else
+            log "Virtual environment already exists at $VENV_PATH"
+        fi
+    fi
+
+    if [ ! -d "$VENV_PATH" ]; then
+        "$pybin" -m venv --clear "$VENV_PATH"
+        log "Created virtual environment at $VENV_PATH (using $pybin)"
     fi
     
     # Activate virtual environment
     source "$VENV_PATH/bin/activate"
+
+    # Ensure packaging tooling exists in the venv.
+    # Some distros/venv setups may not include setuptools by default.
+    python -m pip install --upgrade "pip==24.0" setuptools wheel
 
     log "Python virtual environment setup completed."
 }
@@ -93,8 +94,12 @@ setup_venv() {
 #installing_python_basic_dependencies
 basic_dependencies(){
     sudo apt-get update
-    # Install Python 3, pip, and essential development packages (for compiling C extensions)
-    sudo apt-get install -y python3 python3-pip python3-dev build-essential 
+    # Install Python toolchains. fairseq builds most reliably on Python 3.10/3.11.
+    sudo apt-get install -y python3 python3-pip build-essential
+    sudo apt-get install -y python3.10 python3.10-venv python3.10-dev || true
+    sudo apt-get install -y python3.11 python3.11-venv python3.11-dev || true
+    sudo apt-get install -y pciutils
+    sudo apt-get install -y zsh
     sudo apt-get install autoconf automake cmake curl g++ git graphviz libatlas3-base libtool make pkg-config subversion unzip wget zlib1g-dev gfortran
     sudo apt update
     sudo apt install -y build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev wget curl
@@ -176,23 +181,37 @@ install_pytorch_and_other_packages() {
     log "Installing PyTorch and related packages..."
     source "$VENV_PATH/bin/activate"
   
-    
-    pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url "https://download.pytorch.org/whl/cu121"
+    python -m pip install --upgrade pip
+
+    # fairseq (this fork) is not compatible with NumPy 2.x C-API in our build path.
+    # Force a NumPy 1.x version early so compiled extensions build reliably.
+    pip install --upgrade --force-reinstall "numpy==1.26.4"
+
+    # If torch is already installed (correct version), skip reinstall to avoid large downloads.
+    if python -c "import torch; import sys; sys.exit(0 if torch.__version__.startswith('2.3.0') else 1)" >/dev/null 2>&1; then
+        log "[INFO] torch==2.3.0 already installed. Skipping PyTorch install."
+    else
+    # Prefer CPU wheels unless a CUDA toolchain is present.
+    if command -v nvcc >/dev/null 2>&1; then
+        log "[INFO] nvcc detected. Installing CUDA-enabled PyTorch wheels."
+        pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url "https://download.pytorch.org/whl/cu121"
+    else
+        log "[INFO] nvcc not found. Installing CPU-only PyTorch wheels."
+        pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url "https://download.pytorch.org/whl/cpu"
+    fi
+    fi
 
     # Install other required packages
-    pip install "numpy<2" scipy tqdm sentencepiece soundfile librosa editdistance tensorboardX packaging soundfile
+    pip install scipy tqdm sentencepiece soundfile librosa editdistance tensorboardX packaging soundfile
     pip install npy-append-array h5py kaldi-io g2p_en
 
-    if ! command -v nvcc --version >/dev/null 2>&1; then
+    if ! command -v nvcc >/dev/null 2>&1; then
          pip install faiss-cpu
     else
         pip install faiss-gpu
     fi
     
-    pip install ninja
-    pip install torchcodec
-    sudo apt install zsh
-    python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng')" # we install this to efficiently use the phonemizer G2p
+    pip install ninja torchcodec
 
     log "PyTorch and related packages installed successfully."
 }
@@ -218,9 +237,20 @@ install_fairseq() {
         cd "$FAIRSEQ_ROOT"
     fi
 
-    log "Installing fairseq in editable mode..."
-    pip install --editable ./ \
+    log "Installing fairseq in editable mode (CPU-friendly)..."
+    # Avoid pip build isolation: otherwise pip may try to download a CUDA-enabled torch stack
+    # as a build dependency (very large) even though we already installed CPU torch.
+    # Also avoid dependency resolution during editable install; we install requirements explicitly below.
+    # Limit build parallelism to reduce RAM spikes in small machines.
+    export MAX_JOBS="${MAX_JOBS:-1}"
+    # Skip compiled extensions for Python 3.12 / low-resource environments.
+    FAIRSEQ_SKIP_EXTENSIONS=1 PIP_NO_BUILD_ISOLATION=1 pip install --no-build-isolation --no-deps --editable ./ \
         || { log "[ERROR] Failed to install fairseq in editable mode."; exit 1; }
+
+    # Because we install fairseq with --no-deps (to avoid large/unwanted torch/cuda dependency resolution),
+    # we must explicitly install the small runtime dependencies that fairseq expects.
+    pip install "omegaconf<2.1" "hydra-core>=1.0.7,<1.1" regex sacrebleu tqdm bitarray "scikit-learn" cffi cython packaging \
+        || { log "[ERROR] Failed to install fairseq runtime dependencies."; exit 1; }
 
     # Install wav2vec specific requirements if the file exists
     local wav2vec_req_file="$FAIRSEQ_ROOT/examples/wav2vec/requirements.txt"
@@ -300,7 +330,6 @@ install_flashlight() {
 
     sudo apt-get install pybind11-dev
 
-    # Ensure  nvcc is installed to before proceeding with GPU build
     log "Activating virtual environment: $VENV_PATH"
     source "$VENV_PATH/bin/activate"
 
@@ -321,41 +350,35 @@ install_flashlight() {
         cd "$FLASHLIGHT_SEQ_ROOT"
     fi
 
-    log "Configuring and Building flashlight sequence library WITH Python bindings..."
-    # Remove old build directory for a clean state
+    log "Configuring and building flashlight sequence WITH Python bindings..."
     rm -rf build
-    mkdir build && cd build
+    mkdir -p build && cd build
 
- 
-    local flashlight_python_flag="-DFLASHLIGHT_BUILD_PYTHON=ON" # <--- CHECK THIS FLAG!
-    log "[INFO] Using CMake flag for Python bindings: $flashlight_python_flag (Verify this is correct!)"
+    local flashlight_python_flag="-DFLASHLIGHT_BUILD_PYTHON=ON"
+    local use_cuda_flag="-DFLASHLIGHT_USE_CUDA=OFF"
 
-    export USE_CUDA=1 # Set if building for CUDA
-
-    if ! command -v nvcc &> /dev/null; then
-        log "[INFO] nvcc not found. Switching to CPU-only build."
-        use_cuda_flag="-DFLASHLIGHT_USE_CUDA=OFF"
+    if command -v nvcc >/dev/null 2>&1; then
+        log "[INFO] nvcc detected. Enabling CUDA build for flashlight sequence."
+        use_cuda_flag="-DFLASHLIGHT_USE_CUDA=ON"
+        export USE_CUDA=1
+    else
+        log "[INFO] nvcc not found. Building flashlight sequence CPU-only."
         export USE_CUDA=0
-    # Explicitly point CMake to the Python executable in the venv for robustness
+    fi
+
     local python_executable="$VENV_PATH/bin/python"
     cmake .. -DCMAKE_BUILD_TYPE=Release \
              -DPYTHON_EXECUTABLE="$python_executable" \
              "$flashlight_python_flag" \
-             "$use_cuda_flag" \
+             "$use_cuda_flag"
 
-    # Build the C++ library AND Python bindings
     log "Building Flashlight sequence (C++ and Python)..."
-    cmake --build . --config Release --parallel "$(nproc)" \
-     
-    # Install the Python Bindings into the ACTIVE virtual environment
+    cmake --build . --config Release --parallel "$(nproc)"
+
     log "Installing Flashlight sequence Python bindings into venv..."
-    # This assumes setup.py or similar is generated in the build directory.
     cd ..
-    pip install . \
+    pip install .
 
-    log "[PASS] Flashlight Python bindings installed via pip."
-
-    cd "$INSTALL_ROOT" # Go back to install root
     log "Flashlight installation steps completed."
 
     # --- Re-install fairseq AFTER Flashlight bindings are in venv ---

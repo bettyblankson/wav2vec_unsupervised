@@ -7,24 +7,27 @@ https://github.com/facebookresearch/fairseq/blob/main/examples/wav2vec/unsupervi
 These scripts have been tested to work reliably in a Python virtual environment with PyTorch == 2.3.0
 
 
-## System Requirements
+## System Requirements (CPU-friendly)
+
+This fork is intended to work in **CPU-only** environments (including WSL/Ubuntu) as required by the ICS554 Prosit.
 
 Before running the project, ensure the following requirements are met:
 
-* Linux-based system (recommended)
-* NVIDIA GPU with CUDA support
+* Linux-based system (Ubuntu/WSL is fine)
 * Python virtual environment (venv)
-* Git Installed
+* Git installed
+
+### CUDA / GPU (optional)
+
+CUDA is **not required** for the Prosit deliverable. If you do have an NVIDIA GPU and CUDA installed, the scripts will detect it and can use GPU wheels.
 
 ### Installing GIT 
 if Git is not already installed, run:
  `sudo apt-get install git`
 
-### CUDA Version Requirement
-You must install a CUDA version that is compatible with your GPU and PyTorch version.
-Use the official NVIDIA CUDA Toolkit Archive to identify the correct version for your system:
-**Note: In this project, we use CUDA version 12.3.0.**
-LINK: https://developer.nvidia.com/cuda-12-3-0-download-archive
+### CUDA Version Requirement (only if using a GPU)
+If (and only if) you are running on a machine with an NVIDIA GPU and want GPU acceleration, install a CUDA version compatible with your GPU and PyTorch.
+CUDA install details are not needed for CPU-only runs.
 
 #### Identifying Your System Configuration
 
